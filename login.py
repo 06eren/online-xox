@@ -28,9 +28,17 @@ saat = pygame.time.Clock()
 # Kendi yaptığımız menüyü projeye dahil ediyoruz
 import menu 
 
+import os
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
 # --- FİREBASE BAĞLANTISI ---
 try:
-    cred = credentials.Certificate("anahtar.json")
+    cred = credentials.Certificate(resource_path("anahtar.json"))
     firebase_admin.initialize_app(cred, {
         'databaseURL': 'https://online-xox-a2421-default-rtdb.europe-west1.firebasedatabase.app/'
     })
@@ -248,6 +256,10 @@ while True:
     if mesaj:
         mesaj_yuzeyi = kucuk_font.render(mesaj, True, mesaj_rengi)
         ekran.blit(mesaj_yuzeyi, mesaj_yuzeyi.get_rect(center=(GENISLIK//2, YUKSEKLIK - 50)))
+
+    # Watermark
+    watermark = kucuk_font.render("Developed By: ERN YAZILIM", True, (100, 100, 100))
+    ekran.blit(watermark, (GENISLIK - watermark.get_width() - 10, YUKSEKLIK - watermark.get_height() - 10))
 
     pygame.display.flip()
     saat.tick(60)

@@ -387,6 +387,10 @@ def oyunu_baslat(ekran, kullanici_adi, aktif_oda_kodu, benim_siram, ses_acik):
         ekran.fill((0, 0, 0))
         ekran.blit(temp_surface, (offset_x, offset_y))
         
+        # Watermark
+        watermark = font_kucuk.render("Developed By: ERN YAZILIM", True, (100, 100, 100))
+        ekran.blit(watermark, (GENISLIK - watermark.get_width() - 10, YUKSEKLIK - watermark.get_height() - 10))
+        
         pygame.display.flip()
         pygame.time.Clock().tick(60)
 

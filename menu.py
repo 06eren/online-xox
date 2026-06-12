@@ -701,5 +701,9 @@ def goster(ekran, kullanici_adi):
             mesaj_yuzeyi = font_k.render(mesaj, True, mesaj_rengi)
             ekran.blit(mesaj_yuzeyi, mesaj_yuzeyi.get_rect(center=(orta_x, YUKSEKLIK - 30)))
 
+        # Watermark
+        watermark = font_k.render("Developed By: ERN YAZILIM", True, (100, 100, 100))
+        ekran.blit(watermark, (GENISLIK - watermark.get_width() - 10, YUKSEKLIK - watermark.get_height() - 10))
+
         pygame.display.flip()
         saat.tick(60)
