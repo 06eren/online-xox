@@ -20,7 +20,7 @@ except:
 def play_click():
     if ses_click: ses_click.play()
 
-GENISLIK, YUKSEKLIK = 800, 600
+GENISLIK, YUKSEKLIK = 1200, 700
 ekran = pygame.display.set_mode((GENISLIK, YUKSEKLIK))
 pygame.display.set_caption("Online XOX - Giriş")
 saat = pygame.time.Clock()

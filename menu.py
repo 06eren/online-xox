@@ -4,7 +4,16 @@ import random
 import string
 from firebase_admin import db
 import game
+import ai_bot
 import sesler
+import threading
+
+def close_listener_async(listener):
+    if listener:
+        try:
+            threading.Thread(target=listener.close, daemon=True).start()
+        except:
+            pass
 
 try:
     pygame.mixer.init()
@@ -18,17 +27,9 @@ def play_click():
         try: ses_click.play()
         except: pass
 
-import threading
-
-def close_listener_async(listener):
-    if listener:
-        try:
-            threading.Thread(target=listener.close, daemon=True).start()
-        except:
-            pass
-
 oda_guncel_veri = None
 oda_listener = None
+global_oda_kodu = None
 
 def apply_update(data, path, value):
     if path == '/' or path == '':
@@ -59,7 +60,6 @@ def on_oda_degisti(event):
         for rel_path, val in event.data.items():
             oda_guncel_veri = apply_update(oda_guncel_veri, f"{base_path}/{rel_path}", val)
 
-# --- ANİMASYONLU ARKA PLAN SİSTEMİ ---
 class Parcacik:
     def __init__(self, genislik, yukseklik):
         self.x = random.randint(0, genislik)
@@ -79,7 +79,6 @@ class Parcacik:
     def ciz(self, elite_ekran):
         pygame.draw.circle(elite_ekran, self.renk, (self.x, int(self.y)), self.boyut)
 
-# --- MODERN TEXTBOX VE BUTTON SINIFLARI ---
 class TextBox:
     def __init__(self, x, y, genislik, yukseklik, placeholder, font, sifre_mi=False, max_uzunluk=20):
         self.rect = pygame.Rect(x, y, genislik, yukseklik)
@@ -92,7 +91,6 @@ class TextBox:
 
     def ciz(self, elite_ekran, aktif_renk, normal_renk, yazi_rengi, silik_renk):
         renk = aktif_renk if self.aktif_mi else normal_renk
-        # Glassmorphism effect simulation
         s = pygame.Surface((self.rect.width, self.rect.height), pygame.SRCALPHA)
         s.fill((renk[0], renk[1], renk[2], 180))
         elite_ekran.blit(s, (self.rect.x, self.rect.y))
@@ -138,13 +136,13 @@ class MenuButon:
                 return True
         return False
 
-# --- ODA LİSTESİ ÖĞESİ SINIFI ---
 class OdaListesiOgesi:
     def __init__(self, x, y, genislik, yukseklik, kod, oda_verisi, font_m, font_k):
         self.rect = pygame.Rect(x, y, genislik, yukseklik)
         self.kod = kod
         self.oda_adi = oda_verisi.get('oda_adi', 'İsimsiz Oda')
         self.sifreli_mi = oda_verisi.get('sifreli_mi', False)
+        self.masa_boyutu = oda_verisi.get('masa_boyutu', 3)
         self.oyuncu_sayisi = len(oda_verisi.get('oyuncular', {}))
         self.font_m = font_m
         self.font_k = font_k
@@ -161,7 +159,7 @@ class OdaListesiOgesi:
         isim_metni = f"{self.oda_adi} {'(Sifreli)' if self.sifreli_mi else ''}"
         ekran.blit(self.font_m.render(isim_metni, True, (255, 255, 255)), (self.rect.x + 15, self.rect.y + 10))
         
-        bilgi_metni = f"Kod: {self.kod}  |  {self.oyuncu_sayisi}/2 Oyuncu"
+        bilgi_metni = f"Kod: {self.kod}  |  {self.masa_boyutu}x{self.masa_boyutu}  |  {self.oyuncu_sayisi}/2 Oyuncu"
         ekran.blit(self.font_k.render(bilgi_metni, True, (150, 200, 255)), (self.rect.x + 15, self.rect.y + 45))
 
     def tiklandi_mi(self, event):
@@ -171,9 +169,20 @@ class OdaListesiOgesi:
                 return True
         return False
 
-# --- ANA MODÜL GÖSTERİMİ ---
+def ciz_avatar(ekran, x, y, avatar_id, boyut=40):
+    if avatar_id == 1: # Mavi
+        pygame.draw.circle(ekran, (50, 150, 255), (x, y), boyut//2)
+    elif avatar_id == 2: # Kırmızı Ninja (Kare)
+        pygame.draw.rect(ekran, (255, 50, 50), (x - boyut//2, y - boyut//2, boyut, boyut), border_radius=8)
+    elif avatar_id == 3: # Yeşil Robot (Altıgen)
+        pygame.draw.polygon(ekran, (50, 255, 50), [(x, y - boyut//2), (x + boyut//2, y - boyut//4), (x + boyut//2, y + boyut//4), (x, y + boyut//2), (x - boyut//2, y + boyut//4), (x - boyut//2, y - boyut//4)])
+    elif avatar_id == 4: # Mor Üçgen
+        pygame.draw.polygon(ekran, (200, 50, 255), [(x, y - boyut//2), (x + boyut//2, y + boyut//2), (x - boyut//2, y + boyut//2)])
+    else: # Turuncu Oval
+        pygame.draw.ellipse(ekran, (255, 150, 50), (x - boyut//2, y - boyut//3, boyut, boyut//1.5))
+
 def goster(ekran, kullanici_adi):
-    global oda_listener, oda_guncel_veri, ses_acik
+    global oda_listener, oda_guncel_veri, ses_acik, global_oda_kodu
     GENISLIK, YUKSEKLIK = ekran.get_width(), ekran.get_height()
     saat = pygame.time.Clock()
 
@@ -205,8 +214,10 @@ def goster(ekran, kullanici_adi):
     
     aktif_oda_kodu = ""
     oda_sahibi_mi = False
-    toplam_el_secenekleri = [3, 5, 7, 10]
+    toplam_el_secenekleri = [3, 5, 7, 10, 15, 20, 30, 50]
     el_index = 0
+    masa_secenekleri = [3, 4, 5]
+    masa_index = 0
     sifre_korumasi = False
     
     geri_sayim_basladi_mi = False
@@ -219,25 +230,33 @@ def goster(ekran, kullanici_adi):
 
     orta_x = GENISLIK // 2
     
-    # Ana Menü Butonları
+    # Kullanıcı verisini çek (Avatar vb.)
+    user_ref = db.reference(f'kullanicilar/{kullanici_adi}').get() or {}
+    secili_avatar = user_ref.get('avatar_id', 1)
+
     btn_ana = [
-        MenuButon(orta_x, 220, 300, 45, "Oda Oluştur", font_m, True),
-        MenuButon(orta_x, 280, 300, 45, "Odalara Göz At / Katıl", font_m, True),
-        MenuButon(orta_x, 340, 300, 45, "Sıralama", font_m, True),
-        MenuButon(orta_x, 400, 300, 45, "Ayarlar", font_m, True),
-        MenuButon(orta_x, 460, 300, 45, "Çıkış", font_m, True)
+        MenuButon(orta_x, 180, 300, 45, "Oda Oluştur", font_m, True),
+        MenuButon(orta_x, 240, 300, 45, "Odalara Göz At / Katıl", font_m, True),
+        MenuButon(orta_x, 300, 300, 45, "Bota Karşı Oyna (AI)", font_m, True),
+        MenuButon(orta_x, 360, 300, 45, "Sıralama", font_m, True),
+        MenuButon(orta_x, 420, 300, 45, "Ayarlar", font_m, True),
+        MenuButon(orta_x, 480, 300, 45, "Çıkış", font_m, True)
     ]
     
-    # Oda Oluşturma Ekranı
-    txt_oda_adi = TextBox(orta_x - 150, 180, 300, 45, "Oda Adı", font_m)
-    btn_sifre_toggle = MenuButon(orta_x, 240, 300, 45, "Şifre: KAPALI", font_m, True)
-    txt_oda_sifre = TextBox(orta_x - 150, 300, 300, 45, "Oda Şifresi Girin", font_m, sifre_mi=True)
-    btn_el_azalt = MenuButon(orta_x - 150, 360, 50, 45, "-", font_m)
-    btn_el_arttir = MenuButon(orta_x + 100, 360, 50, 45, "+", font_m)
-    btn_kur_tamamla = MenuButon(orta_x, 440, 300, 45, "Odayı Kur", font_m, True)
-    btn_kur_geri = MenuButon(orta_x, 500, 300, 45, "Geri Dön", font_m, True)
+    # Oda Oluşturma
+    txt_oda_adi = TextBox(orta_x - 150, 140, 300, 45, "Oda Adı", font_m)
+    btn_sifre_toggle = MenuButon(orta_x, 200, 300, 45, "Şifre: KAPALI", font_m, True)
+    txt_oda_sifre = TextBox(orta_x - 150, 260, 300, 45, "Oda Şifresi Girin", font_m, sifre_mi=True)
     
-    # Katıl Ekranı
+    btn_masa_azalt = MenuButon(orta_x - 150, 320, 50, 45, "-", font_m)
+    btn_masa_arttir = MenuButon(orta_x + 100, 320, 50, 45, "+", font_m)
+    
+    btn_el_azalt = MenuButon(orta_x - 150, 380, 50, 45, "-", font_m)
+    btn_el_arttir = MenuButon(orta_x + 100, 380, 50, 45, "+", font_m)
+    
+    btn_kur_tamamla = MenuButon(orta_x, 460, 300, 45, "Odayı Kur", font_m, True)
+    btn_kur_geri = MenuButon(orta_x, 520, 300, 45, "Geri Dön", font_m, True)
+    
     btn_katil_geri = MenuButon(20, 20, 120, 35, "Ana Menü", font_sm)
     btn_liste_yenile = MenuButon(GENISLIK - 140, 20, 120, 35, "Yenile", font_sm)
     txt_liste_sifre = TextBox(orta_x - 200, 390, 200, 40, "Oda Şifresi Girin", font_sm, sifre_mi=True)
@@ -246,15 +265,23 @@ def goster(ekran, kullanici_adi):
     txt_katil_sifre = TextBox(orta_x - 100, 510, 180, 40, "Şifre (Varsa)", font_sm, sifre_mi=True)
     btn_katil_onay = MenuButon(orta_x + 100, 510, 160, 40, "Manuel Bağlan", font_sm)
 
-    # Lobi Ekranı
     btn_lobi_ayril = MenuButon(orta_x, 460, 200, 40, "Odadan Ayrıl", font_sm, True)
 
-    # Sıralama ve Ayarlar Ekranı
     btn_sir_geri = MenuButon(20, 20, 120, 35, "Ana Menü", font_sm)
+    
+    # Ayarlar
     btn_ayarlar_geri = MenuButon(20, 20, 120, 35, "Ana Menü", font_sm)
-    btn_ses_toggle = MenuButon(orta_x, 200, 300, 45, "Sesler: AÇIK", font_m, True)
-    txt_yeni_isim = TextBox(orta_x - 150, 280, 300, 45, "Yeni Kullanıcı Adı", font_m)
-    btn_isim_degistir = MenuButon(orta_x, 340, 300, 45, "İsim Değiştir", font_m, True)
+    btn_ses_toggle = MenuButon(orta_x, 150, 300, 45, "Sesler: AÇIK", font_m, True)
+    txt_yeni_isim = TextBox(orta_x - 150, 220, 300, 45, "Yeni Kullanıcı Adı", font_m)
+    btn_isim_degistir = MenuButon(orta_x, 280, 300, 45, "İsim Değiştir", font_m, True)
+    btn_avatar_sol = MenuButon(orta_x - 100, 370, 40, 40, "<", font_m)
+    btn_avatar_sag = MenuButon(orta_x + 60, 370, 40, 40, ">", font_m)
+    btn_avatar_kaydet = MenuButon(orta_x, 450, 200, 40, "Avatarı Kaydet", font_m, True)
+
+    btn_bot_kolay = MenuButon(orta_x, 200, 300, 45, "Kolay Bot", font_m, True)
+    btn_bot_normal = MenuButon(orta_x, 260, 300, 45, "Normal Bot", font_m, True)
+    btn_bot_zor = MenuButon(orta_x, 320, 300, 45, "Zor Bot", font_m, True)
+    btn_bot_geri = MenuButon(orta_x, 380, 300, 45, "Ana Menü", font_m, True)
 
     create_kutular = [txt_oda_adi, txt_oda_sifre]
     join_kutular = [txt_katil_kod, txt_katil_sifre, txt_liste_sifre]
@@ -266,7 +293,16 @@ def goster(ekran, kullanici_adi):
     def siralama_getir():
         nonlocal siralamalar
         users = db.reference('kullanicilar').get() or {}
-        siralamalar = sorted([(k, v.get('skor', 0)) for k, v in users.items()], key=lambda x: x[1], reverse=True)[:10]
+        liste = []
+        for k, v in users.items():
+            s = v.get('skor', 0)
+            w = v.get('kazanma', 0)
+            l = v.get('kaybetme', 0)
+            a = v.get('avatar_id', 1)
+            total = w + l
+            rate = int((w / total * 100)) if total > 0 else 0
+            liste.append((k, s, rate, a))
+        siralamalar = sorted(liste, key=lambda x: x[1], reverse=True)[:10]
 
     def odalari_yenile():
         nonlocal oda_listesi_ogeleri, secilen_liste_odasi, mesaj
@@ -285,7 +321,7 @@ def goster(ekran, kullanici_adi):
 
     def odaya_baglanma_istegi(hedef_kod, girilen_sifre):
         nonlocal aktif_oda_kodu, oda_sahibi_mi, geri_sayim_basladi_mi, alt_durum, mesaj, mesaj_rengi
-        global oda_listener, oda_guncel_veri
+        global oda_listener, oda_guncel_veri, global_oda_kodu
         hedef_kod = hedef_kod.upper().strip()
         oda_kontrol = db.reference(f'odalar/{hedef_kod}').get()
         
@@ -302,6 +338,7 @@ def goster(ekran, kullanici_adi):
             else:
                 db.reference(f'odalar/{hedef_kod}/oyuncular').update({'oyuncu2': kullanici_adi})
                 aktif_oda_kodu = hedef_kod
+                global_oda_kodu = aktif_oda_kodu
                 oda_sahibi_mi = False
                 geri_sayim_basladi_mi = False
                 alt_durum = "LOBBY"
@@ -318,17 +355,17 @@ def goster(ekran, kullanici_adi):
             p.ciz(ekran)
 
         if alt_durum not in ["JOIN", "LOBBY", "SIRALAMA", "AYARLAR"]: 
-            ekran.blit(font_k.render(f"Giriş Yapan: {kullanici_adi}", True, YESIL), (20, 20))
+            ekran.blit(font_k.render(f"Giriş Yapan: {kullanici_adi}", True, YESIL), (60, 20))
+            ciz_avatar(ekran, 30, 30, secili_avatar, 30)
 
         if alt_durum == "LOBBY" and aktif_oda_kodu:
-            # Listener updates oda_guncel_veri in background!
             if oda_guncel_veri is None:
                 aktif_oda_kodu = ""
                 geri_sayim_basladi_mi = False
                 alt_durum = "ANA"
                 mesaj, mesaj_rengi = "Oda sahibi odayı kapattı.", KIRMIZI
                 if oda_listener:
-                    oda_listener.close()
+                    close_listener_async(oda_listener)
                     oda_listener = None
             else:
                 oyuncular = oda_guncel_veri.get('oyuncular', {})
@@ -394,11 +431,13 @@ def goster(ekran, kullanici_adi):
                     mesaj = ""
                     odalari_yenile() 
                 elif btn_ana[2].tiklandi_mi(event):
+                    alt_durum = "BOT_SETUP"
+                elif btn_ana[3].tiklandi_mi(event):
                     alt_durum = "SIRALAMA"
                     siralama_getir()
-                elif btn_ana[3].tiklandi_mi(event):
-                    alt_durum = "AYARLAR"
                 elif btn_ana[4].tiklandi_mi(event):
+                    alt_durum = "AYARLAR"
+                elif btn_ana[5].tiklandi_mi(event):
                     pygame.quit()
                     sys.exit()
                     
@@ -410,7 +449,6 @@ def goster(ekran, kullanici_adi):
                 elif btn_isim_degistir.tiklandi_mi(event):
                     yeni_isim = txt_yeni_isim.yazi.strip()
                     if yeni_isim:
-                        # Simple logic: create new user with old data, delete old
                         eski_ref = db.reference(f'kullanicilar/{kullanici_adi}').get()
                         if eski_ref:
                             if not db.reference(f'kullanicilar/{yeni_isim}').get():
@@ -421,6 +459,25 @@ def goster(ekran, kullanici_adi):
                                 mesaj, mesaj_rengi = "İsim değiştirildi!", YESIL
                             else:
                                 mesaj, mesaj_rengi = "Bu isim zaten alınmış!", KIRMIZI
+                elif btn_avatar_sol.tiklandi_mi(event):
+                    secili_avatar = secili_avatar - 1 if secili_avatar > 1 else 5
+                elif btn_avatar_sag.tiklandi_mi(event):
+                    secili_avatar = secili_avatar + 1 if secili_avatar < 5 else 1
+                elif btn_avatar_kaydet.tiklandi_mi(event):
+                    db.reference(f'kullanicilar/{kullanici_adi}').update({'avatar_id': secili_avatar})
+                    mesaj, mesaj_rengi = "Avatar kaydedildi!", YESIL
+                    
+            elif alt_durum == "BOT_SETUP":
+                if btn_bot_geri.tiklandi_mi(event): alt_durum = "ANA"
+                elif btn_bot_kolay.tiklandi_mi(event):
+                    ai_bot.botla_oyna(ekran, 3, 3, ses_acik, "kolay")
+                    alt_durum = "ANA"
+                elif btn_bot_normal.tiklandi_mi(event):
+                    ai_bot.botla_oyna(ekran, 3, 3, ses_acik, "normal")
+                    alt_durum = "ANA"
+                elif btn_bot_zor.tiklandi_mi(event):
+                    ai_bot.botla_oyna(ekran, 3, 3, ses_acik, "zor")
+                    alt_durum = "ANA"
 
             elif alt_durum == "SIRALAMA":
                 if btn_sir_geri.tiklandi_mi(event): alt_durum = "ANA"
@@ -430,6 +487,10 @@ def goster(ekran, kullanici_adi):
                 elif btn_sifre_toggle.tiklandi_mi(event):
                     sifre_korumasi = not sifre_korumasi
                     btn_sifre_toggle.metin = "Şifre: AÇIK" if sifre_korumasi else "Şifre: KAPALI"
+                elif btn_masa_azalt.tiklandi_mi(event):
+                    masa_index = (masa_index - 1) % len(masa_secenekleri)
+                elif btn_masa_arttir.tiklandi_mi(event):
+                    masa_index = (masa_index + 1) % len(masa_secenekleri)
                 elif btn_el_azalt.tiklandi_mi(event):
                     el_index = (el_index - 1) % len(toplam_el_secenekleri)
                 elif btn_el_arttir.tiklandi_mi(event):
@@ -446,15 +507,18 @@ def goster(ekran, kullanici_adi):
                             'sifreli_mi': sifre_korumasi,
                             'sifre': txt_oda_sifre.yazi if sifre_korumasi else '',
                             'toplam_el': toplam_el_secenekleri[el_index],
+                            'masa_boyutu': masa_secenekleri[masa_index],
                             'durum': 'bekliyor',
                             'oyuncular': {'oyuncu1': kullanici_adi},
                             'skor': {'oyuncu1': 0, 'oyuncu2': 0},
-                            'mevcut_el': 1
+                            'mevcut_el': 1,
+                            'chat': []
                         }
                         db.reference(f'odalar/{aktif_oda_kodu}').set(oda_verisi)
                         oda_sahibi_mi = True
                         geri_sayim_basladi_mi = False
                         alt_durum = "LOBBY"
+                        global_oda_kodu = aktif_oda_kodu
                         btn_lobi_ayril.metin = "Odayı Kapat"
                         mesaj = ""
                         oda_guncel_veri = oda_verisi
@@ -485,7 +549,7 @@ def goster(ekran, kullanici_adi):
             elif alt_durum == "LOBBY":
                 if btn_lobi_ayril.tiklandi_mi(event):
                     if oda_listener:
-                        oda_listener.close()
+                        close_listener_async(oda_listener)
                         oda_listener = None
                     if oda_sahibi_mi:
                         db.reference(f'odalar/{aktif_oda_kodu}').delete()
@@ -498,44 +562,63 @@ def goster(ekran, kullanici_adi):
                     geri_sayim_basladi_mi = False
                     alt_durum = "ANA"
 
-        # --- EKRAN ÇİZİMLERİ ---
         if alt_durum == "ANA":
             baslik = font_baslik.render("XOX ANA MENÜ", True, ANA_RENK)
-            ekran.blit(baslik, baslik.get_rect(center=(orta_x, 100)))
+            ekran.blit(baslik, baslik.get_rect(center=(orta_x, 90)))
             for btn in btn_ana: btn.ciz(ekran, KUTU_ARKAPLAN, HOVER_RENK)
+
+        elif alt_durum == "BOT_SETUP":
+            baslik = font_baslik.render("ZORLUK SEÇ", True, ANA_RENK)
+            ekran.blit(baslik, baslik.get_rect(center=(orta_x, 90)))
+            btn_bot_kolay.ciz(ekran, KUTU_ARKAPLAN, YESIL)
+            btn_bot_normal.ciz(ekran, KUTU_ARKAPLAN, ALTIN)
+            btn_bot_zor.ciz(ekran, KUTU_ARKAPLAN, KIRMIZI)
+            btn_bot_geri.ciz(ekran, KUTU_ARKAPLAN, HOVER_RENK)
 
         elif alt_durum == "AYARLAR":
             baslik = font_baslik.render("AYARLAR", True, ANA_RENK)
-            ekran.blit(baslik, baslik.get_rect(center=(orta_x, 100)))
+            ekran.blit(baslik, baslik.get_rect(center=(orta_x, 80)))
             btn_ayarlar_geri.ciz(ekran, KUTU_ARKAPLAN, KIRMIZI)
             btn_ses_toggle.ciz(ekran, KUTU_ARKAPLAN, HOVER_RENK)
             txt_yeni_isim.ciz(ekran, KUTU_AKTIF, KUTU_ARKAPLAN, BEYAZ, SILIK)
             btn_isim_degistir.ciz(ekran, KUTU_ARKAPLAN, YESIL)
+            
+            ekran.blit(font_m.render("Profil Avatarı", True, BEYAZ), (orta_x - 70, 330))
+            btn_avatar_sol.ciz(ekran, KUTU_ARKAPLAN, HOVER_RENK)
+            ciz_avatar(ekran, orta_x, 390, secili_avatar, 50)
+            btn_avatar_sag.ciz(ekran, KUTU_ARKAPLAN, HOVER_RENK)
+            btn_avatar_kaydet.ciz(ekran, KUTU_ARKAPLAN, YESIL)
 
         elif alt_durum == "SIRALAMA":
             baslik = font_baslik.render("LİDERLİK TABLOSU", True, ALTIN)
-            ekran.blit(baslik, baslik.get_rect(center=(orta_x, 80)))
+            ekran.blit(baslik, baslik.get_rect(center=(orta_x, 60)))
             btn_sir_geri.ciz(ekran, KUTU_ARKAPLAN, KIRMIZI)
             
-            y_offset = 150
-            for i, (isim, skor) in enumerate(siralamalar):
+            y_offset = 120
+            for i, (isim, skor, wr, av_id) in enumerate(siralamalar):
                 renk = ALTIN if i == 0 else (192, 192, 192) if i == 1 else (205, 127, 50) if i == 2 else BEYAZ
-                metin = font_m.render(f"{i+1}. {isim} - Skor: {skor}", True, renk)
-                ekran.blit(metin, metin.get_rect(center=(orta_x, y_offset)))
+                ciz_avatar(ekran, orta_x - 200, y_offset + 10, av_id, 30)
+                metin = font_m.render(f"{i+1}. {isim} | Skor: {skor} | WR: %{wr}", True, renk)
+                ekran.blit(metin, metin.get_rect(midleft=(orta_x - 170, y_offset + 10)))
                 y_offset += 40
 
         elif alt_durum == "CREATE":
             baslik = font_baslik.render("ODA OLUŞTUR", True, ANA_RENK)
-            ekran.blit(baslik, baslik.get_rect(center=(orta_x, 80)))
+            ekran.blit(baslik, baslik.get_rect(center=(orta_x, 60)))
             
             txt_oda_adi.ciz(ekran, KUTU_AKTIF, KUTU_ARKAPLAN, BEYAZ, SILIK)
             btn_sifre_toggle.ciz(ekran, KUTU_ARKAPLAN, HOVER_RENK)
             if sifre_korumasi:
                 txt_oda_sifre.ciz(ekran, KUTU_AKTIF, KUTU_ARKAPLAN, BEYAZ, SILIK)
             
+            btn_masa_azalt.ciz(ekran, KUTU_ARKAPLAN, HOVER_RENK)
+            m_metni = font_m.render(f"Masa: {masa_secenekleri[masa_index]}x{masa_secenekleri[masa_index]}", True, BEYAZ)
+            ekran.blit(m_metni, m_metni.get_rect(center=(orta_x, 342)))
+            btn_masa_arttir.ciz(ekran, KUTU_ARKAPLAN, HOVER_RENK)
+
             btn_el_azalt.ciz(ekran, KUTU_ARKAPLAN, HOVER_RENK)
             el_metni = font_m.render(f"El Sayısı: {toplam_el_secenekleri[el_index]}", True, BEYAZ)
-            ekran.blit(el_metni, el_metni.get_rect(center=(orta_x, 382)))
+            ekran.blit(el_metni, el_metni.get_rect(center=(orta_x, 402)))
             btn_el_arttir.ciz(ekran, KUTU_ARKAPLAN, HOVER_RENK)
             
             btn_kur_tamamla.ciz(ekran, KUTU_ARKAPLAN, YESIL)
@@ -576,17 +659,19 @@ def goster(ekran, kullanici_adi):
                 p1 = oda_guncel_veri.get('oyuncular', {}).get('oyuncu1', 'Bağlanıyor...')
                 p2 = oda_guncel_veri.get('oyuncular', {}).get('oyuncu2', 'Rakip Bekleniyor...')
                 el_sayisi = oda_guncel_veri.get('toplam_el', 3)
+                m_boyut = oda_guncel_veri.get('masa_boyutu', 3)
                 
                 pygame.draw.rect(ekran, KUTU_ARKAPLAN, (orta_x - 220, 120, 440, 310), border_radius=15)
                 
-                ekran.blit(font_m.render(f"Oda: {oda_guncel_veri.get('oda_adi')}", True, ANA_RENK), (orta_x - 190, 150))
-                ekran.blit(font_m.render(f"Kod: {aktif_oda_kodu}", True, YESIL), (orta_x - 190, 200))
-                ekran.blit(font_m.render(f"Hedef Tur: {el_sayisi} El", True, BEYAZ), (orta_x - 190, 250))
+                ekran.blit(font_m.render(f"Oda: {oda_guncel_veri.get('oda_adi')}", True, ANA_RENK), (orta_x - 190, 140))
+                ekran.blit(font_m.render(f"Kod: {aktif_oda_kodu}", True, YESIL), (orta_x - 190, 180))
+                ekran.blit(font_m.render(f"Masa: {m_boyut}x{m_boyut}", True, BEYAZ), (orta_x - 190, 220))
+                ekran.blit(font_m.render(f"Hedef Tur: {el_sayisi} El", True, BEYAZ), (orta_x - 190, 260))
                 
                 pygame.draw.line(ekran, SILIK, (orta_x - 190, 300), (orta_x + 190, 300), 1)
                 
                 ekran.blit(font_m.render(f"1. Oyuncu (X): {p1}", True, BEYAZ), (orta_x - 190, 320))
-                ekran.blit(font_m.render(f"2. Oyuncu (O): {p2}", True, BEYAZ if p2 != 'Rakip Bekleniyor...' else SILIK), (orta_x - 190, 370))
+                ekran.blit(font_m.render(f"2. Oyuncu (O): {p2}", True, BEYAZ if p2 != 'Rakip Bekleniyor...' else SILIK), (orta_x - 190, 360))
                 
                 if not geri_sayim_basladi_mi:
                     btn_lobi_ayril.ciz(ekran, KUTU_ARKAPLAN, KIRMIZI)
@@ -614,7 +699,7 @@ def goster(ekran, kullanici_adi):
 
         if mesaj and not (alt_durum == "LOBBY" and geri_sayim_basladi_mi):
             mesaj_yuzeyi = font_k.render(mesaj, True, mesaj_rengi)
-            ekran.blit(mesaj_yuzeyi, mesaj_yuzeyi.get_rect(center=(orta_x, YUKSEKLIK - 40)))
+            ekran.blit(mesaj_yuzeyi, mesaj_yuzeyi.get_rect(center=(orta_x, YUKSEKLIK - 30)))
 
         pygame.display.flip()
         saat.tick(60)

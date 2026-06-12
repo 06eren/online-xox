@@ -57,7 +57,7 @@ class Confetti:
     def update(self):
         self.x += self.vx
         self.y += self.vy
-        self.vy += 0.5 # gravity
+        self.vy += 0.5 
         self.angle += self.rot_speed
 
     def draw(self, surface):
@@ -66,29 +66,46 @@ class Confetti:
         s = pygame.transform.rotate(s, self.angle)
         surface.blit(s, (self.x, self.y))
 
-def check_win(board):
-    if not board or len(board) < 9: return None
-    lines = [(0,1,2), (3,4,5), (6,7,8), (0,3,6), (1,4,7), (2,5,8), (0,4,8), (2,4,6)]
-    for a, b, c in lines:
-        if board[a] != '' and board[a] == board[b] == board[c]:
-            return board[a]
-    if '' not in board:
-        return 'draw'
+class HareketliEmoji:
+    def __init__(self, emoji_txt, x, y):
+        self.txt = emoji_txt
+        self.x = x
+        self.y = y
+        self.vy = -3
+        self.alpha = 255
+        self.size = 50
+    
+    def update(self):
+        self.y += self.vy
+        self.alpha -= 3
+
+def check_win_dynamic(board, n, target):
+    def get_cell(r, c):
+        return board[r * n + c]
+    for r in range(n):
+        for c in range(n):
+            val = get_cell(r, c)
+            if val == '': continue
+            if c <= n - target and all(get_cell(r, c+i) == val for i in range(target)): return val
+            if r <= n - target and all(get_cell(r+i, c) == val for i in range(target)): return val
+            if c <= n - target and r <= n - target and all(get_cell(r+i, c+i) == val for i in range(target)): return val
+            if c >= target - 1 and r <= n - target and all(get_cell(r+i, c-i) == val for i in range(target)): return val
+    if '' not in board: return 'draw'
     return None
 
-def oyunu_baslat(ekran, kullanici_adi, oda_kodu, oyuncu_sirasi, ses_acik):
+def oyunu_baslat(ekran, kullanici_adi, aktif_oda_kodu, benim_siram, ses_acik):
     global oda_veri
+    oda_veri = None
+
     GENISLIK, YUKSEKLIK = ekran.get_width(), ekran.get_height()
-    KUTU_BOYUT = 140
-    OFFSET_X = (GENISLIK - (3 * KUTU_BOYUT)) // 2
-    OFFSET_Y = 100
     
     font_isimleri = pygame.font.get_fonts()
     secili_font = "impact" if "impact" in font_isimleri else ("arialblack" if "arialblack" in font_isimleri else None)
     font_baslik = pygame.font.SysFont(secili_font, 40)
     font_normal = pygame.font.SysFont(secili_font, 28)
+    font_kucuk = pygame.font.SysFont(secili_font, 18)
+    font_emoji = pygame.font.SysFont("segoeuiemoji", 30) # Windows için emojileri destekleyen font
 
-    # Sesleri Yükle
     ses_place_x = ses_place_o = ses_win = ses_lose = None
     if ses_acik:
         try:
@@ -96,197 +113,271 @@ def oyunu_baslat(ekran, kullanici_adi, oda_kodu, oyuncu_sirasi, ses_acik):
             ses_place_o = pygame.mixer.Sound("place_o.wav")
             ses_win = pygame.mixer.Sound("win.wav")
             ses_lose = pygame.mixer.Sound("lose.wav")
-        except:
-            pass
+        except: pass
 
     def play_sound(sound):
         if ses_acik and sound:
             try: sound.play()
             except: pass
 
-    oda_ref = db.reference(f'odalar/{oda_kodu}')
-    oda_veri = oda_ref.get() # Initial data
+    oda_ref = db.reference(f'odalar/{aktif_oda_kodu}')
+    oda_baslangic = oda_ref.get()
     
-    if oyuncu_sirasi == 'oyuncu1':
-        oda_ref.update({
-            'tahta': ['' for _ in range(9)],
-            'sira': 'oyuncu1',
-            'el_durumu': 'oynaniyor'
-        })
+    if not oda_baslangic: return
+    oda_veri = oda_baslangic
+    
+    n = oda_veri.get('masa_boyutu', 3)
+    hedef_tur = oda_veri.get('toplam_el', 3)
+    target = 3 if n == 3 else 4 # 3x3 için 3, 4x4 ve 5x5 için 4 yan yana
+
+    KUTU_BOYUT = 400 // n
+    OFFSET_X = (GENISLIK - (n * KUTU_BOYUT)) // 2 - 100 # Sola kaydır
+    OFFSET_Y = 100
 
     listener = oda_ref.listen(on_oda_degisti)
-    
-    sallanma_miktari = 0
-    konfetiler = []
-    
-    el_sonu_zamani = 0
-    el_beklemede = False
-    
-    mac_bitti = False
-    mac_bitti_zamani = 0
 
-    temp_surface = pygame.Surface((GENISLIK, YUKSEKLIK))
+    if 'tahta' not in oda_veri:
+        if benim_siram == 'oyuncu1':
+            oda_ref.update({'tahta': ['' for _ in range(n*n)], 'sira': 'oyuncu1'})
+
+    konfetiler = []
+    hareketli_emojiler = []
+    sallanma_miktari = 0
+    son_islenen_chat_id = ""
     
+    temp_surface = pygame.Surface((GENISLIK, YUKSEKLIK))
+
+    chat_input = ""
+    chat_aktif = False
+    
+    mac_bitti_efekti_oynadi = False
+    profil_guncellendi = False
+    el_bitis_local = 0
+
     while True:
-        su_an = pygame.time.get_ticks()
-        
-        # Güvenlik kontrolü, oda_veri yoksa veya dictionary değilse odadan çık
         if not oda_veri or not isinstance(oda_veri, dict):
             break
 
-        mevcut_tahta = oda_veri.get('tahta', ['' for _ in range(9)])
-        mevcut_sira = oda_veri.get('sira', 'oyuncu1')
-        el_durumu = oda_veri.get('el_durumu', 'oynaniyor')
+        su_an = pygame.time.get_ticks()
+        
+        tahta = oda_veri.get('tahta', ['' for _ in range(n*n)])
+        sira = oda_veri.get('sira', 'oyuncu1')
         skor = oda_veri.get('skor', {'oyuncu1': 0, 'oyuncu2': 0})
-        hedef_el = oda_veri.get('toplam_el', 3)
-        hedef_skor = (hedef_el // 2) + 1
+        mevcut_el = oda_veri.get('mevcut_el', 1)
+        el_durumu = oda_veri.get('el_durumu', 'oynaniyor')
+        kazanan = oda_veri.get('kazanan', None)
         
-        # Kazanan kontrolü
-        kazanan = check_win(mevcut_tahta)
-        
-        if kazanan and not el_beklemede and el_durumu == 'oynaniyor':
-            el_beklemede = True
-            el_sonu_zamani = su_an
-            if oyuncu_sirasi == 'oyuncu1':
-                yeni_skor_1 = skor.get('oyuncu1', 0) + (1 if kazanan == 'oyuncu1' else 0)
-                yeni_skor_2 = skor.get('oyuncu2', 0) + (1 if kazanan == 'oyuncu2' else 0)
-                oda_ref.update({
-                    'el_durumu': 'bitti',
-                    'kazanan': kazanan,
-                    'skor': {'oyuncu1': yeni_skor_1, 'oyuncu2': yeni_skor_2}
-                })
-            
-            if kazanan == oyuncu_sirasi:
-                play_sound(ses_win)
-                for _ in range(150):
-                    konfetiler.append(Confetti(GENISLIK // 2, YUKSEKLIK))
-            elif kazanan != 'draw':
-                play_sound(ses_lose)
-                sallanma_miktari = 20
+        hedef_skor = (hedef_tur // 2) + 1
+        mac_bitti = skor.get('oyuncu1', 0) >= hedef_skor or skor.get('oyuncu2', 0) >= hedef_skor
 
-        # El bitince 3 saniye bekle ve yeni ele veya maç sonuna geç
-        if el_durumu == 'bitti' and su_an - el_sonu_zamani > 3000 and not mac_bitti:
-            # Maçın bitip bitmediğini kontrol et
-            if skor.get('oyuncu1', 0) >= hedef_skor or skor.get('oyuncu2', 0) >= hedef_skor:
-                mac_bitti = True
-                mac_bitti_zamani = su_an
-                
-                mac_kazanani = 'oyuncu1' if skor.get('oyuncu1', 0) >= hedef_skor else 'oyuncu2'
-                
-                # Global Leaderboard skoru güncelle
-                if oyuncu_sirasi == mac_kazanani:
-                    kullanici_ref = db.reference(f'kullanicilar/{kullanici_adi}')
-                    user_data = kullanici_ref.get() or {}
-                    eski_skor = user_data.get('skor', 0)
-                    kullanici_ref.update({'skor': eski_skor + 1})
+        if mac_bitti and not profil_guncellendi:
+            profil_guncellendi = True
+            user_ref = db.reference(f'kullanicilar/{kullanici_adi}')
+            ud = user_ref.get() or {}
+            if skor.get(benim_siram, 0) >= hedef_skor:
+                ud['kazanma'] = ud.get('kazanma', 0) + 1
             else:
-                if oyuncu_sirasi == 'oyuncu1':
-                    mevcut_el = oda_veri.get('mevcut_el', 1)
-                    oda_ref.update({
-                        'tahta': ['' for _ in range(9)],
-                        'sira': 'oyuncu1' if mevcut_el % 2 == 1 else 'oyuncu2',
-                        'el_durumu': 'oynaniyor',
-                        'kazanan': '',
-                        'mevcut_el': mevcut_el + 1
-                    })
-                el_beklemede = False
-                
-        if mac_bitti and su_an - mac_bitti_zamani > 4000:
-            if oyuncu_sirasi == 'oyuncu1':
-                oda_ref.delete()
-            break
+                ud['kaybetme'] = ud.get('kaybetme', 0) + 1
+            user_ref.update(ud)
+
+        chat_gecmisi = oda_veri.get('chat', {})
+        if chat_gecmisi and isinstance(chat_gecmisi, dict):
+            son_key = list(chat_gecmisi.keys())[-1]
+            son_mesaj = chat_gecmisi[son_key]
+            if son_key != son_islenen_chat_id:
+                son_islenen_chat_id = son_key
+                if "|EMOJI|" in son_mesaj:
+                    gonderen, emj = son_mesaj.split("|EMOJI|")
+                    gonderen_sira = 'oyuncu1' if gonderen.strip() == oda_veri['oyuncular']['oyuncu1'] else 'oyuncu2'
+                    # Emoji animasyonunu fırlat (ben attıysam sol alttan, o attıysa sağ alttan vb. veya ekranda belirsin)
+                    ex = OFFSET_X + 200
+                    ey = OFFSET_Y + 200
+                    hareketli_emojiler.append(HareketliEmoji(emj.strip(), ex, ey))
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 if listener: close_listener_async(listener)
-                if oyuncu_sirasi == 'oyuncu1': oda_ref.delete()
+                if benim_siram == 'oyuncu1': oda_ref.delete()
                 else: oda_ref.child('oyuncular/oyuncu2').delete()
                 pygame.quit()
                 sys.exit()
                 
-            if event.type == pygame.MOUSEBUTTONDOWN and mevcut_sira == oyuncu_sirasi and el_durumu == 'oynaniyor':
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 pos = pygame.mouse.get_pos()
-                # Geri butonuna tıklanma
+                # Ayrıl Butonu
                 if 20 <= pos[0] <= 140 and 20 <= pos[1] <= 60:
-                    break
-                    
-                # Ekran offsetini çıkararak tıklamayı hesapla
-                col = (pos[0] - OFFSET_X) // KUTU_BOYUT
-                row = (pos[1] - OFFSET_Y) // KUTU_BOYUT
+                    if listener: close_listener_async(listener)
+                    if benim_siram == 'oyuncu1': oda_ref.delete()
+                    else: oda_ref.child('oyuncular/oyuncu2').delete()
+                    return
                 
-                if 0 <= col < 3 and 0 <= row < 3:
-                    index = row * 3 + col
-                    if mevcut_tahta[index] == '':
-                        mevcut_tahta[index] = oyuncu_sirasi
-                        yeni_sira = 'oyuncu2' if oyuncu_sirasi == 'oyuncu1' else 'oyuncu1'
-                        
-                        if oyuncu_sirasi == 'oyuncu1': play_sound(ses_place_x)
-                        else: play_sound(ses_place_o)
-                        
-                        oda_ref.update({
-                            'tahta': mevcut_tahta,
-                            'sira': yeni_sira
-                        })
+                # Chat Aktifleştirme
+                if GENISLIK - 350 <= pos[0] <= GENISLIK - 20 and YUKSEKLIK - 60 <= pos[1] <= YUKSEKLIK - 20:
+                    chat_aktif = True
+                else:
+                    chat_aktif = False
 
-        # --- ÇİZİM İŞLEMLERİ ---
+                # Emojiler (Gülme, Kızma vb. 4 emoji butonu)
+                emoji_list = ["😂", "😠", "😭", "🎯"]
+                CHAT_X = GENISLIK - 350
+                for i, emj in enumerate(emoji_list):
+                    ex = CHAT_X + 20 + (i * 70)
+                    ey = 100
+                    if ex <= pos[0] <= ex + 55 and ey <= pos[1] <= ey + 50:
+                        oda_ref.child('chat').push(f"{kullanici_adi}|EMOJI|{emj}")
+
+                # Tahta hamlesi
+                if el_durumu == 'oynaniyor' and sira == benim_siram and not mac_bitti:
+                    col = (pos[0] - OFFSET_X) // KUTU_BOYUT
+                    row = (pos[1] - OFFSET_Y) // KUTU_BOYUT
+                    
+                    if 0 <= col < n and 0 <= row < n:
+                        idx = row * n + col
+                        if tahta[idx] == '':
+                            yeni_tahta = tahta.copy()
+                            yeni_tahta[idx] = benim_siram
+                            
+                            if benim_siram == 'oyuncu1': play_sound(ses_place_x)
+                            else: play_sound(ses_place_o)
+
+                            k = check_win_dynamic(yeni_tahta, n, target)
+                            if k:
+                                yeni_skor = skor.copy()
+                                if k != 'draw': yeni_skor[k] += 1
+                                oda_ref.update({'tahta': yeni_tahta, 'el_durumu': 'bitti', 'kazanan': k, 'skor': yeni_skor, 'el_bitis_zamani': int(time.time())})
+                            else:
+                                siradaki = 'oyuncu2' if benim_siram == 'oyuncu1' else 'oyuncu1'
+                                oda_ref.update({'tahta': yeni_tahta, 'sira': siradaki})
+            
+            if event.type == pygame.KEYDOWN and chat_aktif:
+                if event.key == pygame.K_RETURN:
+                    if chat_input.strip():
+                        oda_ref.child('chat').push(f"{kullanici_adi}: {chat_input.strip()}")
+                        chat_input = ""
+                elif event.key == pygame.K_BACKSPACE:
+                    chat_input = chat_input[:-1]
+                else:
+                    if len(chat_input) < 30:
+                        chat_input += event.unicode
+
+        if el_durumu == 'bitti' and not mac_bitti:
+            if el_bitis_local == 0:
+                el_bitis_local = su_an
+                
+            if not mac_bitti_efekti_oynadi:
+                mac_bitti_efekti_oynadi = True
+                if kazanan == benim_siram:
+                    play_sound(ses_win)
+                    for _ in range(150): konfetiler.append(Confetti(GENISLIK//2, YUKSEKLIK))
+                elif kazanan and kazanan != 'draw':
+                    play_sound(ses_lose)
+                    sallanma_miktari = 20
+
+            if benim_siram == 'oyuncu1' and el_bitis_local > 0 and su_an - el_bitis_local > 3000:
+                oda_ref.update({
+                    'tahta': ['' for _ in range(n*n)],
+                    'sira': 'oyuncu1',
+                    'el_durumu': 'oynaniyor',
+                    'kazanan': None,
+                    'mevcut_el': mevcut_el + 1
+                })
+                el_bitis_local = 0
+        elif el_durumu == 'oynaniyor':
+            el_bitis_local = 0
+            mac_bitti_efekti_oynadi = False
+
         temp_surface.fill((15, 15, 20))
-        
-        # Geri Dön Butonu
+
+        # Ayrıl Butonu
         pygame.draw.rect(temp_surface, (255, 80, 80), (20, 20, 120, 40), border_radius=8)
         btn_yazi = font_normal.render("Ayrıl", True, (255, 255, 255))
         temp_surface.blit(btn_yazi, btn_yazi.get_rect(center=(80, 40)))
 
-        # Skor ve Bilgi Alanı
-        p1_isim = oda_veri.get('oyuncular', {}).get('oyuncu1', 'Oyuncu 1')
-        p2_isim = oda_veri.get('oyuncular', {}).get('oyuncu2', 'Oyuncu 2')
-        skor_p1 = skor.get('oyuncu1', 0)
-        skor_p2 = skor.get('oyuncu2', 0)
-        
-        skor_yazi = font_baslik.render(f"{p1_isim} (X)   {skor_p1} - {skor_p2}   {p2_isim} (O)", True, (255, 215, 0))
-        temp_surface.blit(skor_yazi, skor_yazi.get_rect(center=(GENISLIK // 2, 50)))
-        
-        # Modern Tahta Çizimi (Neon glow effect simulation)
-        for i in range(1, 3):
-            # Dikey çizgiler
-            pygame.draw.line(temp_surface, (0, 150, 255), (OFFSET_X + i * KUTU_BOYUT, OFFSET_Y), (OFFSET_X + i * KUTU_BOYUT, OFFSET_Y + 3 * KUTU_BOYUT), 6)
-            # Yatay çizgiler
-            pygame.draw.line(temp_surface, (0, 150, 255), (OFFSET_X, OFFSET_Y + i * KUTU_BOYUT), (OFFSET_X + 3 * KUTU_BOYUT, OFFSET_Y + i * KUTU_BOYUT), 6)
+        # Skorlar
+        p1_isim = oda_veri['oyuncular'].get('oyuncu1', '1. Oyuncu')
+        p2_isim = oda_veri['oyuncular'].get('oyuncu2', '2. Oyuncu')
+        skor_yazi = font_baslik.render(f"{p1_isim} (X)   {skor.get('oyuncu1',0)} - {skor.get('oyuncu2',0)}   {p2_isim} (O)", True, (255, 215, 0))
+        temp_surface.blit(skor_yazi, skor_yazi.get_rect(center=(OFFSET_X + (n*KUTU_BOYUT)//2, 50)))
 
-        for idx, deger in enumerate(mevcut_tahta):
-            x = OFFSET_X + (idx % 3) * KUTU_BOYUT + KUTU_BOYUT // 2
-            y = OFFSET_Y + (idx // 3) * KUTU_BOYUT + KUTU_BOYUT // 2
+        # Tahta Çizgileri
+        for i in range(1, n):
+            pygame.draw.line(temp_surface, (0, 150, 255), (OFFSET_X + i * KUTU_BOYUT, OFFSET_Y), (OFFSET_X + i * KUTU_BOYUT, OFFSET_Y + n * KUTU_BOYUT), 6)
+            pygame.draw.line(temp_surface, (0, 150, 255), (OFFSET_X, OFFSET_Y + i * KUTU_BOYUT), (OFFSET_X + n * KUTU_BOYUT, OFFSET_Y + i * KUTU_BOYUT), 6)
+
+        # X ve O'lar
+        for idx, deger in enumerate(tahta):
+            x = OFFSET_X + (idx % n) * KUTU_BOYUT + KUTU_BOYUT // 2
+            y = OFFSET_Y + (idx // n) * KUTU_BOYUT + KUTU_BOYUT // 2
             
-            if deger == 'oyuncu1': # X - Neon Kırmızı
-                pygame.draw.line(temp_surface, (255, 50, 50), (x-40, y-40), (x+40, y+40), 12)
-                pygame.draw.line(temp_surface, (255, 50, 50), (x+40, y-40), (x-40, y+40), 12)
-            elif deger == 'oyuncu2': # O - Neon Mavi
-                pygame.draw.circle(temp_surface, (50, 200, 255), (x, y), 45, 10)
+            p = KUTU_BOYUT // 3
+            if deger == 'oyuncu1':
+                pygame.draw.line(temp_surface, (255, 50, 50), (x-p, y-p), (x+p, y+p), 8)
+                pygame.draw.line(temp_surface, (255, 50, 50), (x+p, y-p), (x-p, y+p), 8)
+            elif deger == 'oyuncu2':
+                pygame.draw.circle(temp_surface, (50, 200, 255), (x, y), int(p*1.2), 8)
 
-        # Durum Mesajı
+        # Durum Yazısı
         if mac_bitti:
-            mac_kazanani = 'oyuncu1' if skor.get('oyuncu1', 0) >= hedef_skor else 'oyuncu2'
-            durum_yazi = "MAÇI KAZANDIN!" if oyuncu_sirasi == mac_kazanani else "MAÇI KAYBETTİN!"
-            renk = (50, 255, 50) if oyuncu_sirasi == mac_kazanani else (255, 50, 50)
+            durum_yazi = "MAÇI KAZANDIN!" if skor.get(benim_siram,0) >= hedef_skor else "MAÇI KAYBETTİN!"
+            renk = (50, 255, 50) if skor.get(benim_siram,0) >= hedef_skor else (255, 50, 50)
         elif el_durumu == 'bitti':
-            kaz = oda_veri.get('kazanan')
-            if kaz == 'draw': durum_yazi, renk = "BERABERE!", (200, 200, 200)
-            elif kaz == oyuncu_sirasi: durum_yazi, renk = "ELİ KAZANDIN!", (50, 255, 50)
+            if kazanan == 'draw': durum_yazi, renk = "BERABERE!", (200, 200, 200)
+            elif kazanan == benim_siram: durum_yazi, renk = "ELİ KAZANDIN!", (50, 255, 50)
             else: durum_yazi, renk = "ELİ KAYBETTİN!", (255, 50, 50)
         else:
-            durum_yazi = "Sıra Sende!" if mevcut_sira == oyuncu_sirasi else "Rakibin Hamlesi Bekleniyor..."
-            renk = (50, 255, 50) if mevcut_sira == oyuncu_sirasi else (200, 200, 200)
+            durum_yazi = "Sıra Sende!" if sira == benim_siram else "Rakip Bekleniyor..."
+            renk = (50, 255, 50) if sira == benim_siram else (200, 200, 200)
             
         bilgi = font_baslik.render(durum_yazi, True, renk)
-        temp_surface.blit(bilgi, bilgi.get_rect(center=(GENISLIK // 2, YUKSEKLIK - 50)))
+        temp_surface.blit(bilgi, bilgi.get_rect(center=(OFFSET_X + (n*KUTU_BOYUT)//2, YUKSEKLIK - 50)))
 
-        # Konfetiler
+        # SOHBET BÖLÜMÜ (Sağ Taraf)
+        CHAT_X = GENISLIK - 350
+        CHAT_Y = 160
+        CHAT_W = 330
+        pygame.draw.rect(temp_surface, (30, 30, 35), (CHAT_X, CHAT_Y, CHAT_W, 370), border_radius=10)
+        
+        # Emoji Butonları Çizimi
+        emoji_list = ["😂", "😠", "😭", "🎯"]
+        for i, emj in enumerate(emoji_list):
+            ex = CHAT_X + 20 + (i * 70)
+            ey = 100
+            pygame.draw.rect(temp_surface, (50, 50, 60), (ex, ey, 55, 50), border_radius=10)
+            e_surf = font_emoji.render(emj, True, (255, 255, 255))
+            temp_surface.blit(e_surf, e_surf.get_rect(center=(ex+27, ey+25)))
+
+        chat_gecmisi = oda_veri.get('chat', {})
+        if isinstance(chat_gecmisi, dict):
+            mesajlar = list(chat_gecmisi.values())
+            # Sadece normal metinleri chatte göster
+            metin_mesajlar = [m for m in mesajlar if "|EMOJI|" not in m][-8:]
+            my_offset = CHAT_Y + 10
+            for m in metin_mesajlar:
+                renk_m = (150, 255, 150) if m.startswith(kullanici_adi) else (255, 255, 255)
+                ms = font_kucuk.render(m[:35], True, renk_m)
+                temp_surface.blit(ms, (CHAT_X + 10, my_offset))
+                my_offset += 30
+
+        # Chat İnput Kutusu
+        input_rect = pygame.Rect(CHAT_X + 10, YUKSEKLIK - 60, CHAT_W - 20, 40)
+        pygame.draw.rect(temp_surface, (70, 70, 80) if chat_aktif else (50, 50, 60), input_rect, border_radius=5)
+        placeholder = chat_input if chat_aktif else (chat_input if chat_input else "Mesaj yaz (Enter)")
+        ip_surf = font_kucuk.render(placeholder, True, (255, 255, 255) if chat_aktif else (150, 150, 150))
+        temp_surface.blit(ip_surf, (input_rect.x + 10, input_rect.y + 10))
+
+        # Efektler
         for k in konfetiler[:]:
             k.update()
             k.draw(temp_surface)
-            if k.y > YUKSEKLIK:
-                konfetiler.remove(k)
+            if k.y > YUKSEKLIK: konfetiler.remove(k)
 
-        # Sallanma (Screen Shake) hesapla ve çiz
+        for he in hareketli_emojiler[:]:
+            he.update()
+            emj_surf = font_emoji.render(he.txt, True, (255, 255, 255))
+            emj_surf.set_alpha(he.alpha)
+            temp_surface.blit(emj_surf, emj_surf.get_rect(center=(he.x, he.y)))
+            if he.alpha <= 0: hareketli_emojiler.remove(he)
+
         offset_x, offset_y = 0, 0
         if sallanma_miktari > 0:
             offset_x = random.randint(-sallanma_miktari, sallanma_miktari)
@@ -299,6 +390,5 @@ def oyunu_baslat(ekran, kullanici_adi, oda_kodu, oyuncu_sirasi, ses_acik):
         pygame.display.flip()
         pygame.time.Clock().tick(60)
 
-    # Temizlik
     if listener:
         close_listener_async(listener)
